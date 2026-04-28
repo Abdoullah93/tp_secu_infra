@@ -1,0 +1,9 @@
+# Example non-root Dockerfile for Node Exporter
+# Use this to build a node-exporter image that runs as non-root.
+FROM prom/node-exporter:latest
+
+# Many official images expose a non-root UID; this example forces the container
+# to run with a non-root UID. Adjust the UID/GID if needed to match your host.
+USER 1000:1000
+
+# No additional layers are added here; this Dockerfile is intentionally minimal.

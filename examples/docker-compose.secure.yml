@@ -1,0 +1,43 @@
+# Example secure docker-compose for demonstration only.
+# Notes:
+# - `deploy.resources` is supported by Docker Swarm / docker stack deploy. For plain
+#   `docker-compose` you may use equivalent `mem_limit`/`cpus` settings depending on your Compose version.
+# - This file pins image tags, runs services as non-root, drops capabilities and sets resource limits.
+
+version: '3.8'
+services:
+  prometheus:
+    image: prom/prometheus:v2.40.0
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+  grafana:
+    image: grafana/grafana:9.0.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - .env
+    user: "1000:1000"
+    restart: unless-stopped
+
+  node-exporter:
+    build:
+      context: ./examples
+      dockerfile: Dockerfile.node-exporter
+    image: local/node-exporter:secure
+    ports:
+      - "9100:9100"
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
