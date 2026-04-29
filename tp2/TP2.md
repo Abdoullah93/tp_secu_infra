@@ -6,9 +6,9 @@
 
 ---
 
-## Mise en place — Conteneur de démonstration vulnérable
+## Mise en place — Conteneurs de démonstration
 
-Avant de commencer les missions, créez le fichier suivant. Il représente un conteneur **intentionnellement non protégé**, tel qu'on en trouve trop souvent en production.
+Créez les deux fichiers suivants. Le premier représente un conteneur **intentionnellement non protégé** ; le second servira à démontrer l'effet du `pids_limit` seul, avant d'aborder le durcissement complet.
 
 **`docker-compose.vuln.yml`**
 
@@ -19,7 +19,16 @@ services:
     container_name: demo-vuln
     # Aucune limite CPU ni mémoire
     # Aucune restriction de capabilities
-    # Accès complet au système de processus de l'hôte
+    # Aucune limite de processus
+    command: sleep infinity
+    stdin_open: true
+    tty: true
+
+  demo-secure:
+    image: ubuntu:22.04
+    container_name: demo-secure
+    # Même image, mais avec une limite de processus
+    pids_limit: 20
     command: sleep infinity
     stdin_open: true
     tty: true
@@ -43,7 +52,7 @@ docker ps
 
 ## Mission 2.1 — Simulation d'un DoS par Fork Bomb
 
-> **Objectif :** Comprendre pourquoi un conteneur sans limites peut mettre à genoux un serveur entier, et observer cet impact en temps réel via les métriques.
+> **Objectif :** Comprendre pourquoi un conteneur sans limites peut mettre à genoux un serveur entier, et observer cet impact en temps réel.
 
 ### Étape 1 — Ouvrir le monitoring en parallèle
 
@@ -71,12 +80,12 @@ Vous pouvez aussi garder Grafana ouvert sur `http://localhost:3000` pour observe
 docker exec -it demo-vuln bash
 ```
 
-### Étape 3 — Lancer la Fork Bomb (dans le conteneur uniquement)
+### Étape 3 — Lancer la Fork Bomb dans `demo-vuln`
 
-> **⚠️ Sécurité :** La commande suivante doit être exécutée **uniquement dans le shell du conteneur**, jamais directement sur votre machine hôte. Le conteneur `demo-vuln` n'a pas de `pids_limit`, ce qui permet de démontrer l'impact — mais votre hôte Ubuntu dispose de sa propre limite système (généralement 32 768 processus) qui empêchera un crash total. Si votre machine commence à freezer, ouvrez un troisième terminal et exécutez `docker kill demo-vuln`.
+> **⚠️ Sécurité :** La commande suivante doit être exécutée **uniquement dans le shell du conteneur**, jamais directement sur votre machine hôte. Votre hôte Ubuntu dispose de sa propre limite noyau (généralement 32 768 processus) qui empêchera un crash total — mais si votre machine commence à freezer, ouvrez un troisième terminal et exécutez `docker kill demo-vuln`.
 
 ```bash
-# Commande à exécuter DANS le conteneur (après docker exec -it demo-vuln bash)
+# Commande à exécuter DANS le conteneur demo-vuln
 :(){ :|:& };:
 ```
 
@@ -84,24 +93,35 @@ Cette one-liner définit une fonction `:` qui s'appelle elle-même deux fois en 
 
 ### Étape 4 — Observer l'impact
 
-Dans le Terminal A (`docker stats`), regardez la colonne `PIDS` exploser pour le conteneur `demo-vuln`. Observez aussi comment la charge CPU de l'hôte augmente dans le Terminal B.
+Dans le Terminal A (`docker stats`), regardez la colonne `PIDS` exploser pour `demo-vuln`. Dans le Terminal B, observez la charge CPU (`loadavg`) et le nombre total de processus sur l'hôte augmenter.
 
-**Après 15 à 20 secondes**, depuis un troisième terminal, stoppez proprement le conteneur :
+**Après 15 à 20 secondes**, depuis un troisième terminal :
 
 ```bash
 docker kill demo-vuln
+docker compose -f docker-compose.vuln.yml up -d
 ```
 
-Puis redémarrez-le pour la suite :
+### Étape 5 — Re-tenter sur `demo-secure` (avec `pids_limit: 20`)
 
 ```bash
-docker compose -f docker-compose.vuln.yml up -d
+docker exec -it demo-secure bash
+# Dans le conteneur :
+:(){ :|:& };:
+```
+
+Observez dans `docker stats` : la colonne `PIDS` de `demo-secure` ne dépasse pas 20. Le conteneur peut devenir instable ou s'arrêter, mais **l'hôte et `node-exporter` ne sont pas affectés**.
+
+```bash
+# Depuis un autre terminal, vérifier que node-exporter répond toujours
+curl -s http://localhost:9100/metrics | head -5
 ```
 
 **Questions d'analyse :**
 
-- Qu'avez-vous observé dans `docker stats` pendant la fork bomb ? La colonne `PIDS` a-t-elle une limite ?
-- Node Exporter a-t-il continué à répondre sur `:9100` pendant l'attaque ? Pourquoi ?
+- Qu'avez-vous observé dans `docker stats` pendant la fork bomb sur `demo-vuln` ? La colonne `PIDS` avait-elle une limite ?
+- Quelle différence constatez-vous sur `demo-secure` avec `pids_limit: 20` ?
+- Node Exporter a-t-il continué à répondre sur `:9100` pendant l'attaque sur `demo-vuln` ? Pourquoi ?
 - Pourquoi le monitoring cesse-t-il de répondre en premier dans un scénario réel sans isolation ?
 - Quel serait l'impact métier si ce serveur était mutualisé entre plusieurs équipes en production ?
 
@@ -117,30 +137,45 @@ Par défaut, Docker accorde aux conteneurs un ensemble de **capabilities** (droi
 
 | Capability | Ce qu'elle permet |
 |---|---|
-| `NET_RAW` | Forger des paquets réseau bruts (utile pour des attaques ARP/IP spoofing) |
+| `NET_RAW` | Forger des paquets réseau bruts (ARP/IP spoofing) |
 | `SYS_CHROOT` | Changer la racine du système de fichiers |
 | `AUDIT_WRITE` | Écrire dans le journal d'audit du noyau |
 | `CHOWN` | Changer le propriétaire de n'importe quel fichier |
 
 La stratégie correcte est : **tout supprimer, puis ne rajouter que ce qui est strictement nécessaire**.
 
-### Étape 1 — Identifier les capabilities utilisées par un service
+### Étape 1 — Identifier les capabilities actives par défaut
 
-Avant de restreindre, identifiez ce dont votre service a réellement besoin :
+`docker inspect` ne montre que les overrides explicites — un conteneur sans `cap_drop` ni `cap_add` affiche `[]` dans les deux champs, mais dispose quand même de ~14 capabilities actives par défaut. Voici comment les voir réellement :
 
 ```bash
-# Pour voir les capabilities réellement actives dans le processus du conteneur
+# Lire les capabilities du processus principal dans demo-vuln
 docker exec demo-vuln cat /proc/1/status | grep Cap
+```
 
-# Décoder les valeurs hexadécimales en noms lisibles
-# (capsh doit être installé : apt install -y libcap2-bin)
-apt install -y libcap2-bin 2>/dev/null || true
+Vous obtenez des valeurs hexadécimales (`CapEff`, `CapPrm`, etc.). Pour les décoder en noms lisibles :
+
+```bash
+# Installer capsh sur l'HÔTE (pas dans le conteneur)
+sudo apt install -y libcap2-bin
+
+# Décoder CapEff (capabilities effectivement actives)
 capsh --decode=$(docker exec demo-vuln cat /proc/1/status | grep CapEff | awk '{print $2}')
 ```
 
+Vous devriez voir apparaître une liste comme :
+
+```
+cap_chown, cap_dac_override, cap_fowner, cap_fsetid, cap_kill,
+cap_setgid, cap_setuid, cap_setpcap, cap_net_bind_service,
+cap_net_raw, cap_sys_chroot, cap_mknod, cap_audit_write, cap_setfcap
+```
+
+Notez en particulier `cap_net_raw` et `cap_sys_chroot` — deux capabilities inutiles pour la quasi-totalité des applications et exploitables par un attaquant.
+
 ### Étape 2 — Créer `docker-compose.secure.yml`
 
-Copiez votre fichier vulnérable et appliquez les protections suivantes. Chaque paramètre est commenté pour vous expliquer son rôle.
+> **Note technique — limites de ressources :** `deploy.resources` est une directive Docker Swarm ignorée par `docker compose` classique. Pour que les limites CPU et mémoire s'appliquent réellement, utilisez `mem_limit`, `mem_reservation` et `cpus` directement au niveau du service.
 
 ```yaml
 services:
@@ -151,33 +186,29 @@ services:
       - "9100:9100"
     restart: unless-stopped
 
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"      # Maximum 25% d'un cœur CPU
-          memory: 128M      # Maximum 128 Mo de RAM
-        reservations:
-          cpus: "0.05"      # Garantie minimum de 5% CPU
-          memory: 32M       # Garantie minimum de 32 Mo RAM
+    # Limites de ressources (syntaxe standalone — fonctionne sans Swarm)
+    mem_limit: 128m           # Maximum 128 Mo de RAM
+    mem_reservation: 32m      # Garantie minimum de 32 Mo RAM
+    cpus: 0.25                # Maximum 25% d'un cœur CPU
+
+    # Limite de processus — parade directe à la fork bomb
+    pids_limit: 64
 
     # Sécurité : principe du moindre privilège
     cap_drop:
-      - ALL                 # On supprime TOUTES les capabilities par défaut
-
+      - ALL                         # Supprimer TOUTES les capabilities par défaut
     cap_add:
-      - DAC_READ_SEARCH     # Nécessaire pour lire /proc et les métriques système
+      - DAC_READ_SEARCH             # Nécessaire pour lire /proc et les métriques système
 
     security_opt:
-      - no-new-privileges:true   # Interdit l'élévation de privilèges (setuid/setgid)
+      - no-new-privileges:true      # Interdit l'élévation de privilèges (setuid/setgid)
 
-    read_only: true         # Système de fichiers du conteneur en lecture seule
+    read_only: true                 # Système de fichiers en lecture seule
 
-    pids_limit: 64          # Maximum 64 processus dans ce conteneur (fork bomb impossible)
-
-    user: "65534:65534"     # Exécution en tant que nobody:nogroup (non-root)
+    user: "65534:65534"             # Exécution en tant que nobody:nogroup (non-root)
 
     volumes:
-      - /proc:/host/proc:ro       # Montage en lecture seule uniquement
+      - /proc:/host/proc:ro
       - /sys:/host/sys:ro
     command:
       - '--path.procfs=/host/proc'
@@ -190,16 +221,13 @@ services:
     ports:
       - "9090:9090"
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 256M
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 128
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 128
     user: "65534:65534"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -210,18 +238,15 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 256M
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 128
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 128
     env_file:
-      - .env                # Les credentials dans un fichier .env, jamais en clair ici
+      - .env                        # Credentials dans .env, jamais en clair ici
     volumes:
       - grafana-data:/var/lib/grafana
 
@@ -237,7 +262,6 @@ GF_SECURITY_ADMIN_USER=admin
 GF_SECURITY_ADMIN_PASSWORD=changeme_mot_de_passe_fort
 EOF
 
-# S'assurer que .env ne sera jamais commité
 echo ".env" >> .gitignore
 ```
 
@@ -250,30 +274,41 @@ docker compose -f docker-compose.vuln.yml down
 # Lancer la stack sécurisée
 docker compose -f docker-compose.secure.yml up -d
 
-# Vérifier que les conteneurs sont bien lancés
+# Vérifier que les conteneurs tournent
 docker ps
 
-# Inspecter les limites appliquées
-docker inspect node-exporter-secure | grep -A 10 '"HostConfig"' | grep -E "Memory|NanoCpus|PidsLimit|CapDrop|CapAdd"
+# Vérifier les limites réellement appliquées
+docker inspect node-exporter-secure \
+  --format='Mem: {{.HostConfig.Memory}} | CPUs: {{.HostConfig.NanoCpus}} | PIDs: {{.HostConfig.PidsLimit}} | CapDrop: {{.HostConfig.CapDrop}} | CapAdd: {{.HostConfig.CapAdd}}'
 ```
 
-### Étape 5 — Re-tenter la Fork Bomb sur le conteneur sécurisé
+Les valeurs attendues :
+- `Mem` : `134217728` (128 Mo en octets)
+- `NanoCpus` : `250000000` (0.25 CPU)
+- `PIDs` : `64`
+- `CapDrop` : `[ALL]`
+
+### Étape 5 — Vérifier les capabilities après durcissement
 
 ```bash
-docker exec -it node-exporter-secure sh
-# Dans le conteneur :
-:(){ :|:& };:
+# Comparer les capabilities avant et après
+echo "=== demo-vuln (non protégé) ==="
+capsh --decode=$(docker exec demo-vuln cat /proc/1/status | grep CapEff | awk '{print $2}')
+
+echo "=== node-exporter-secure (cap_drop: ALL) ==="
+capsh --decode=$(docker exec node-exporter-secure cat /proc/1/status | grep CapEff | awk '{print $2}')
 ```
 
-Observez dans `docker stats` ce qui se passe maintenant. Le `pids_limit: 64` doit bloquer la prolifération de processus. Le conteneur peut devenir instable mais l'hôte et les autres conteneurs sont protégés.
+Le second devrait retourner `0x0000000000000000 =` — aucune capability active.
 
 **Questions d'analyse :**
 
 - Pourquoi commence-t-on par `cap_drop: ALL` plutôt que de supprimer les capabilities dangereuses une par une ?
-- Quelle est la différence entre `cap_drop: ALL` + `cap_add: [DAC_READ_SEARCH]` et ne rien mettre du tout ?
+- Quelle est la différence entre `cap_drop: ALL` + `cap_add: [DAC_READ_SEARCH]` et ne rien configurer du tout ?
 - En quoi `no-new-privileges: true` protège-t-il contre les binaires `setuid` ?
-- Pourquoi `pids_limit` est-il la parade directe à la fork bomb ?
+- Pourquoi `pids_limit` est-il la parade directe à la fork bomb, et non `mem_limit` ?
 - Le paramètre `user: "65534:65534"` force l'exécution non-root. Quel risque cela atténue-t-il si le conteneur est compromis ?
+- Pourquoi `deploy.resources` est-il ignoré en `docker compose` classique ? Dans quel contexte s'applique-t-il ?
 
 ---
 
@@ -282,21 +317,23 @@ Observez dans `docker stats` ce qui se passe maintenant. Le `pids_limit: 64` doi
 Un document (Markdown ou PDF) contenant :
 
 - Le fichier `docker-compose.secure.yml` complet et commenté.
-- Captures `docker stats` pendant et après la fork bomb sur le conteneur vulnérable (Mission 2.1).
-- Capture de la commande `docker inspect` montrant les limites appliquées (Mission 2.2).
+- Captures `docker stats` montrant la fork bomb sur `demo-vuln` (PIDS illimités) et son blocage sur `demo-secure` (PIDS ≤ 20).
+- Capture de `docker inspect node-exporter-secure` confirmant les limites appliquées.
+- Capture de la comparaison `capsh` avant/après durcissement.
 - Réponses aux questions d'analyse des deux missions.
 
 ---
 
 ## Checklist de validation
 
-- `docker-compose.secure.yml` déposé avec `deploy.resources`, `cap_drop`, `cap_add`, `pids_limit` et `security_opt`
-- Les credentials Grafana sont dans `.env` (pas en clair dans le Compose)
-- `.env` est dans `.gitignore`
-- Les images utilisent des tags fixés (pas `latest`)
-- Capture `docker stats` montrant l'impact de la fork bomb sur le conteneur vulnérable
-- Capture `docker inspect` confirmant les limites sur le conteneur sécurisé
-- Réponses aux questions d'analyse
+- [ ] `docker-compose.secure.yml` avec `mem_limit`, `cpus`, `pids_limit`, `cap_drop`, `cap_add`, `security_opt`
+- [ ] Les credentials Grafana sont dans `.env` (pas en clair dans le Compose)
+- [ ] `.env` est dans `.gitignore`
+- [ ] Les images utilisent des tags fixés (pas `latest`)
+- [ ] Capture `docker stats` — fork bomb sur `demo-vuln` (PIDS explosent) et sur `demo-secure` (PIDS bloqués à 20)
+- [ ] Capture `docker inspect` confirmant `Memory`, `NanoCpus`, `PidsLimit`, `CapDrop`
+- [ ] Capture `capsh` comparant les capabilities avant/après
+- [ ] Réponses aux questions d'analyse
 
 ---
 
@@ -304,5 +341,5 @@ Un document (Markdown ou PDF) contenant :
 
 - [Docker Security Best Practices](https://docs.docker.com/engine/security/)
 - [Linux Capabilities — man7.org](https://man7.org/linux/man-pages/man7/capabilities.7.html)
-- [Docker — Limites de ressources](https://docs.docker.com/compose/compose-file/deploy/)
+- [Docker Compose — options de ressources standalone](https://docs.docker.com/compose/compose-file/05-services/#mem_limit)
 - [Docker — seccomp et capabilities](https://docs.docker.com/engine/security/seccomp/)
