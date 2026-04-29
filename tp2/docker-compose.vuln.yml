@@ -1,0 +1,17 @@
+services:
+  demo-vuln:
+    image: ubuntu:22.04
+    container_name: demo-vuln
+    # Aucune limite CPU ni mémoire
+    # Aucune restriction de capabilities
+    # Accès complet au système de processus de l'hôte
+    command: sleep infinity
+    stdin_open: true
+    tty: true
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    restart: unless-stopped

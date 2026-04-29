@@ -129,11 +129,13 @@ La stratégie correcte est : **tout supprimer, puis ne rajouter que ce qui est s
 Avant de restreindre, identifiez ce dont votre service a réellement besoin :
 
 ```bash
-# Lister les capabilities actives d'un conteneur en cours d'exécution
-docker inspect demo-vuln --format='{{.HostConfig.CapAdd}} / Drop: {{.HostConfig.CapDrop}}'
+# Pour voir les capabilities réellement actives dans le processus du conteneur
+docker exec demo-vuln cat /proc/1/status | grep Cap
 
-# Pour node-exporter (lecture seule du système, pas besoin de capabilities réseau avancées)
-docker inspect node-exporter --format='{{.HostConfig.CapAdd}} / Drop: {{.HostConfig.CapDrop}}'
+# Décoder les valeurs hexadécimales en noms lisibles
+# (capsh doit être installé : apt install -y libcap2-bin)
+apt install -y libcap2-bin 2>/dev/null || true
+capsh --decode=$(docker exec demo-vuln cat /proc/1/status | grep CapEff | awk '{print $2}')
 ```
 
 ### Étape 2 — Créer `docker-compose.secure.yml`
@@ -141,8 +143,6 @@ docker inspect node-exporter --format='{{.HostConfig.CapAdd}} / Drop: {{.HostCon
 Copiez votre fichier vulnérable et appliquez les protections suivantes. Chaque paramètre est commenté pour vous expliquer son rôle.
 
 ```yaml
-version: "3.8"
-
 services:
   node-exporter:
     image: prom/node-exporter:v1.7.0        # Tag fixé — jamais "latest"
