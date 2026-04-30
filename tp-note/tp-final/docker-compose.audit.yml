@@ -1,0 +1,30 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest              # Faille 1 : tag flottant
+    container_name: prometheus-audit
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - /var/run/docker.sock:/var/run/docker.sock  # Faille 2 : socket Docker monté
+
+  grafana:
+    image: grafana/grafana:latest              # Faille 3 : tag flottant
+    container_name: grafana-audit
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin        # Faille 4 : mot de passe par défaut en clair
+
+  node-exporter:
+    image: prom/node-exporter:latest           # Faille 5 : tag flottant
+    container_name: node-exporter-audit
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc
+      - /sys:/host/sys
+    # Faille 6 : aucune limite CPU/RAM
+    # Faille 7 : aucun cap_drop
+    # Faille 8 : pas de no-new-privileges
