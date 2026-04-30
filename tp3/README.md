@@ -293,7 +293,7 @@ Par défaut, beaucoup d'images Docker officielles s'exécutent en tant que `root
 
 ```bash
 # Vérifier quel utilisateur tourne dans node-exporter:latest
-docker run --rm prom/node-exporter:latest whoami
+docker run --rm --entrypoint /bin/sh prom/node-exporter:latest -c "id"
 ```
 
 ### Étape 1 — Créer un Dockerfile non-root pour Node Exporter
@@ -338,7 +338,8 @@ CMD ["/bin/sh"]
 docker build -f Dockerfile.node-exporter -t node-exporter-secure:local .
 
 # Vérifier l'utilisateur effectif
-docker run --rm node-exporter-secure:local whoami
+docker run --rm --entrypoint /bin/sh node-exporter-secure:local -c "id"
+
 
 # Scanner l'image custom avec Trivy
 trivy image node-exporter-secure:local
