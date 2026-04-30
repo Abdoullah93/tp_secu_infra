@@ -83,6 +83,9 @@ wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-k
 echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
   | sudo tee /etc/apt/sources.list.d/trivy.list
 sudo apt update && sudo apt install -y trivy
+#### INSTALLATION CORRIGéE ####
+wget https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.deb
+sudo dpkg -i trivy_0.70.0_Linux-64bit.deb
 
 # Vérification
 trivy --version
