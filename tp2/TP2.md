@@ -326,14 +326,14 @@ Un document (Markdown ou PDF) contenant :
 
 ## Checklist de validation
 
-- [ ] `docker-compose.secure.yml` avec `mem_limit`, `cpus`, `pids_limit`, `cap_drop`, `cap_add`, `security_opt`
-- [ ] Les credentials Grafana sont dans `.env` (pas en clair dans le Compose)
-- [ ] `.env` est dans `.gitignore`
-- [ ] Les images utilisent des tags fixés (pas `latest`)
-- [ ] Capture `docker stats` — fork bomb sur `demo-vuln` (PIDS explosent) et sur `demo-secure` (PIDS bloqués à 20)
-- [ ] Capture `docker inspect` confirmant `Memory`, `NanoCpus`, `PidsLimit`, `CapDrop`
-- [ ] Capture `capsh` comparant les capabilities avant/après
-- [ ] Réponses aux questions d'analyse
+- `docker-compose.secure.yml` avec `mem_limit`, `cpus`, `pids_limit`, `cap_drop`, `cap_add`, `security_opt`
+- Les credentials Grafana sont dans `.env` (pas en clair dans le Compose)
+- `.env` est dans `.gitignore`
+- Les images utilisent des tags fixés (pas `latest`)
+- Capture `docker stats` — fork bomb sur `demo-vuln` (PIDS explosent) et sur `demo-secure` (PIDS bloqués à 20)
+- Capture `docker inspect` confirmant `Memory`, `NanoCpus`, `PidsLimit`, `CapDrop`
+- Capture `capsh` comparant les capabilities avant/après
+- Réponses aux questions d'analyse
 
 ---
 
