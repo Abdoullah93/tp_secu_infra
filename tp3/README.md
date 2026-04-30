@@ -111,7 +111,7 @@ Pour chaque image, notez dans votre rendu :
 ### Étape 3 — Générer un rapport HTML exploitable
 
 ```bash
-# Télécharger le template HTML de Trivy
+# Télécharger le template HTML de Trivy ### DEJA FAIT POUR VOUS
 wget https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
 
 # Générer les rapports
